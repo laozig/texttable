@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from PySide6.QtCore import QItemSelection, Qt
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, Qt
 from PySide6.QtGui import (
     QAction,
     QDragEnterEvent,
@@ -680,7 +680,7 @@ class MainWindow(QMainWindow):
             left = self._proxy.index(row, 0)
             right = self._proxy.index(row, column_count - 1)
             to_select.select(left, right)
-        selection.select(to_select, QAbstractItemView.Select)
+        selection.select(to_select, QItemSelectionModel.Select | QItemSelectionModel.Rows)
 
     def _open_files_dialog(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
