@@ -27,7 +27,7 @@ class ExportDialog(QDialog):
     def __init__(
         self,
         headers: list[str],
-        templates: list[dict],
+        templates: list[dict] | None,
         preview_rows: list[list[str]],
         preview_headers: list[str],
         total_rows: int,
@@ -36,7 +36,7 @@ class ExportDialog(QDialog):
     ) -> None:
         super().__init__()
         self.setWindowTitle("导出")
-        self._templates = templates
+        self._templates = templates or []
         self._selected_columns = selected_columns[:]
 
         self._type_combo = QComboBox()
@@ -59,8 +59,8 @@ class ExportDialog(QDialog):
 
         self._template_combo = QComboBox()
         self._template_combo.addItem("选择模板...")
-        for template in templates:
-            self._template_combo.addItem(template.get("name", "Unnamed"))
+        for template in self._templates:
+            self._template_combo.addItem(template.get("name", "未命名"))
         self._template_combo.currentIndexChanged.connect(self._apply_template)
 
         self._template_name = QLineEdit()
@@ -180,7 +180,7 @@ class ExportDialog(QDialog):
         self._template_combo.clear()
         self._template_combo.addItem("选择模板...")
         for template in self._templates:
-            self._template_combo.addItem(template.get("name", "Unnamed"))
+            self._template_combo.addItem(template.get("name", "未命名"))
         self._template_combo.blockSignals(False)
 
     def get_selected_columns(self) -> list[int]:
@@ -213,7 +213,7 @@ def export_txt(path: Path, headers: list[str], rows: list[list[str]], delimiter:
 
 
 def export_csv(path: Path, headers: list[str], rows: list[list[str]]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as file:
+    with path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(headers)
         writer.writerows(rows)

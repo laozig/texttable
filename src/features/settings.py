@@ -62,6 +62,11 @@ class SettingsManager:
         value = self._settings.value("export/templates")
         if not value:
             return []
+        try:
+            data = json.loads(str(value))
+            return data if isinstance(data, list) else []
+        except json.JSONDecodeError:
+            return []
 
     def set_filter_templates(self, templates: list[dict]) -> None:
         self._settings.setValue("filters/templates", json.dumps(templates))
@@ -69,11 +74,6 @@ class SettingsManager:
     def get_filter_templates(self) -> list[dict]:
         value = self._settings.value("filters/templates")
         if not value:
-            return []
-        try:
-            data = json.loads(str(value))
-            return data if isinstance(data, list) else []
-        except json.JSONDecodeError:
             return []
         try:
             data = json.loads(str(value))
