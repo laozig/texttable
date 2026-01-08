@@ -70,11 +70,13 @@ class FilterProxyModel(QSortFilterProxyModel):
         return True
 
     def lessThan(self, left, right) -> bool:
+        left_value = left.data()
+        right_value = right.data()
         if left.column() == 0 and right.column() == 0:
             try:
-                return int(left.data()) < int(right.data())
+                return int(left_value) < int(right_value)
             except (TypeError, ValueError):
-                return str(left.data()) < str(right.data())
+                return str(left_value) < str(right_value)
         if self._whole_row_sort is not None:
             model = self.sourceModel()
             if model is None:
@@ -93,7 +95,32 @@ class FilterProxyModel(QSortFilterProxyModel):
             left_key = "----".join(left_values)
             right_key = "----".join(right_values)
             return left_key < right_key
-        return super().lessThan(left, right)
+        return self._compare_with_numeric_prefix(left_value, right_value)
+
+    def _compare_with_numeric_prefix(self, left_value, right_value) -> bool:
+        left_text = "" if left_value is None else str(left_value)
+        right_text = "" if right_value is None else str(right_value)
+        left_num = self._leading_number(left_text)
+        right_num = self._leading_number(right_text)
+        if left_num is not None and right_num is not None:
+            if left_num != right_num:
+                return left_num < right_num
+            return left_text < right_text
+        if left_num is not None and right_num is None:
+            return True
+        if left_num is None and right_num is not None:
+            return False
+        return left_text < right_text
+
+    @staticmethod
+    def _leading_number(text: str) -> int | None:
+        match = re.match(r"\s*(\d+)", text)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
 
     def _apply_rule(self, rule: FilterRule, row_values: list[str]) -> bool:
         if rule.column is None:
