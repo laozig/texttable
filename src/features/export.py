@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,7 +17,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QTableView,
     QVBoxLayout,
 )
 
@@ -28,9 +26,6 @@ class ExportDialog(QDialog):
         self,
         headers: list[str],
         templates: list[dict] | None,
-        preview_rows: list[list[str]],
-        preview_headers: list[str],
-        total_rows: int,
         selected_rows: int,
         selected_columns: list[int],
     ) -> None:
@@ -75,17 +70,6 @@ class ExportDialog(QDialog):
         self._export_selected_columns = QCheckBox("仅导出选中列")
         self._export_selected_columns.setChecked(False)
 
-        self._preview_label = QLabel(f"行数：{total_rows}")
-        self._preview_view = QTableView()
-        self._preview_model = QStandardItemModel()
-        self._preview_model.setColumnCount(len(preview_headers))
-        self._preview_model.setHorizontalHeaderLabels(preview_headers)
-        for row in preview_rows:
-            items = [QStandardItem(value) for value in row]
-            self._preview_model.appendRow(items)
-        self._preview_view.setModel(self._preview_model)
-        self._preview_view.setMaximumHeight(140)
-
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("导出")
         buttons.accepted.connect(self.accept)
@@ -113,9 +97,6 @@ class ExportDialog(QDialog):
         layout.addWidget(QLabel("模板："))
         layout.addWidget(self._template_combo)
         layout.addLayout(template_layout)
-        layout.addWidget(QLabel("导出预览（前几行）："))
-        layout.addWidget(self._preview_label)
-        layout.addWidget(self._preview_view)
         layout.addWidget(buttons)
         self.setLayout(layout)
 

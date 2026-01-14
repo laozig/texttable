@@ -19,7 +19,6 @@ class FilterProxyModel(QSortFilterProxyModel):
         super().__init__()
         self._global_filter: str = ""
         self._rules: list[FilterRule] = []
-        self._whole_row_sort: Qt.SortOrder | None = None
 
     def set_global_filter(self, text: str) -> None:
         self._global_filter = text.strip()
@@ -39,15 +38,6 @@ class FilterProxyModel(QSortFilterProxyModel):
 
     def filters(self) -> list[FilterRule]:
         return self._rules[:]
-
-    def set_whole_row_sort(self, order: Qt.SortOrder) -> None:
-        self._whole_row_sort = order
-        self.invalidate()
-        self.sort(0, order)
-
-    def clear_whole_row_sort(self) -> None:
-        self._whole_row_sort = None
-        self.invalidate()
 
     def filterAcceptsRow(self, source_row: int, source_parent) -> bool:
         model = self.sourceModel()
@@ -77,24 +67,6 @@ class FilterProxyModel(QSortFilterProxyModel):
                 return int(left_value) < int(right_value)
             except (TypeError, ValueError):
                 return str(left_value) < str(right_value)
-        if self._whole_row_sort is not None:
-            model = self.sourceModel()
-            if model is None:
-                return False
-            column_count = model.columnCount() - 1
-            if column_count <= 0:
-                return False
-            left_values = [
-                str(model.data(model.index(left.row(), col + 1), Qt.DisplayRole) or "")
-                for col in range(column_count)
-            ]
-            right_values = [
-                str(model.data(model.index(right.row(), col + 1), Qt.DisplayRole) or "")
-                for col in range(column_count)
-            ]
-            left_key = "----".join(left_values)
-            right_key = "----".join(right_values)
-            return left_key < right_key
         return self._compare_with_numeric_prefix(left_value, right_value)
 
     def _compare_with_numeric_prefix(self, left_value, right_value) -> bool:

@@ -68,6 +68,13 @@ class SettingsManager:
         except json.JSONDecodeError:
             return []
 
+    def set_last_export_dir(self, path: str) -> None:
+        self._settings.setValue("export/last_dir", path)
+
+    def get_last_export_dir(self) -> str:
+        value = self._settings.value("export/last_dir", "")
+        return str(value)
+
     def set_filter_templates(self, templates: list[dict]) -> None:
         self._settings.setValue("filters/templates", json.dumps(templates))
 

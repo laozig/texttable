@@ -58,6 +58,10 @@ class MainWindow(QMainWindow):
         self._last_text = ""
         self._last_files: list[str] = []
         self._column_order_names: list[str] = []
+        self._undo_stack: list[tuple[list[list[str]], list[str]]] = []
+        self._redo_stack: list[tuple[list[list[str]], list[str]]] = []
+        self._max_undo = 30
+        self._copy_only_selected_columns = False
 
         self._model = TextTableModel()
         self._proxy = FilterProxyModel()
@@ -108,12 +112,6 @@ class MainWindow(QMainWindow):
         self._filter_template_save.clicked.connect(self._save_filter_template)
         self._filter_template_delete.clicked.connect(self._delete_filter_template)
 
-        self._sort_asc = QPushButton("整体排序(升序)")
-        self._sort_desc = QPushButton("整体排序(降序)")
-        self._sort_reset = QPushButton("恢复默认排序")
-        self._sort_asc.clicked.connect(lambda: self._proxy.set_whole_row_sort(Qt.AscendingOrder))
-        self._sort_desc.clicked.connect(lambda: self._proxy.set_whole_row_sort(Qt.DescendingOrder))
-        self._sort_reset.clicked.connect(self._reset_sort)
 
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(self._global_filter)
@@ -126,9 +124,6 @@ class MainWindow(QMainWindow):
         filter_layout.addWidget(self._filter_template_name)
         filter_layout.addWidget(self._filter_template_save)
         filter_layout.addWidget(self._filter_template_delete)
-        filter_layout.addWidget(self._sort_asc)
-        filter_layout.addWidget(self._sort_desc)
-        filter_layout.addWidget(self._sort_reset)
 
         filter_panel = QWidget()
         filter_panel.setLayout(filter_layout)
@@ -151,6 +146,7 @@ class MainWindow(QMainWindow):
         self._refresh_filter_columns()
         self._refresh_filter_templates()
         self._init_theme()
+        self._update_undo_actions()
 
         self._model.modelReset.connect(self._sync_after_model_change)
         self._model.layoutChanged.connect(self._sync_after_model_change)
@@ -160,6 +156,7 @@ class MainWindow(QMainWindow):
         self._view.selectionModel().selectionChanged.connect(lambda *_: self._update_status())
 
         self._restore_geometry()
+        self._restore_last_session()
         self._update_status("就绪")
 
     def _build_actions(self) -> None:
@@ -167,13 +164,15 @@ class MainWindow(QMainWindow):
         self._import_action.triggered.connect(self._open_files_dialog)
         self._paste_action = QAction("粘贴", self)
         self._paste_action.triggered.connect(self._paste_from_clipboard)
+        self._undo_action = QAction("撤销", self)
+        self._redo_action = QAction("重做", self)
+        self._undo_action.setShortcut(QKeySequence.Undo)
+        self._redo_action.setShortcut(QKeySequence.Redo)
+        self._undo_action.triggered.connect(self._undo)
+        self._redo_action.triggered.connect(self._redo)
 
-        self._export_txt_action = QAction("导出 TXT", self)
-        self._export_csv_action = QAction("导出 CSV", self)
-        self._export_xlsx_action = QAction("导出 XLSX", self)
-        self._export_txt_action.triggered.connect(lambda: self._export("TXT"))
-        self._export_csv_action.triggered.connect(lambda: self._export("CSV"))
-        self._export_xlsx_action.triggered.connect(lambda: self._export("XLSX"))
+        self._export_action = QAction("导出", self)
+        self._export_action.triggered.connect(lambda: self._export(None))
 
         self._column_manager_action = QAction("列管理", self)
         self._column_manager_action.triggered.connect(self._open_column_manager)
@@ -202,9 +201,7 @@ class MainWindow(QMainWindow):
         menu.addAction(self._import_action)
         menu.addAction(self._paste_action)
         menu.addSeparator()
-        menu.addAction(self._export_txt_action)
-        menu.addAction(self._export_csv_action)
-        menu.addAction(self._export_xlsx_action)
+        menu.addAction(self._export_action)
         menu.addSeparator()
         self._recent_menu = menu.addMenu("最近文件")
 
@@ -213,16 +210,20 @@ class MainWindow(QMainWindow):
         tools.addAction(self._batch_tools_action)
         tools.addAction(self._dedup_action)
         tools.addAction(self._group_action)
+        edit = self.menuBar().addMenu("编辑")
+        edit.addAction(self._undo_action)
+        edit.addAction(self._redo_action)
 
         self._refresh_recent_menu()
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("主工具栏")
+        toolbar.addAction(self._undo_action)
+        toolbar.addAction(self._redo_action)
+        toolbar.addSeparator()
         toolbar.addAction(self._import_action)
         toolbar.addAction(self._paste_action)
-        toolbar.addAction(self._export_txt_action)
-        toolbar.addAction(self._export_csv_action)
-        toolbar.addAction(self._export_xlsx_action)
+        toolbar.addAction(self._export_action)
         toolbar.addAction(self._column_manager_action)
         toolbar.addAction(self._batch_tools_action)
         toolbar.addAction(self._dedup_action)
@@ -481,6 +482,7 @@ class MainWindow(QMainWindow):
     def _sync_after_model_change(self) -> None:
         self._refresh_filter_columns()
         self._update_status()
+        self._update_undo_actions()
 
     def _refresh_filter_columns(self) -> None:
         self._filter_column.clear()
@@ -560,76 +562,26 @@ class MainWindow(QMainWindow):
         self._update_filter_summary()
         self._update_status()
 
-    def _reset_sort(self) -> None:
-        self._proxy.clear_whole_row_sort()
-        self._proxy.sort(0, Qt.AscendingOrder)
-        header = self._view.horizontalHeader()
-        header.setSortIndicator(-1, Qt.AscendingOrder)
-        self._update_status("已恢复默认排序")
+    def _show_context_menu(self, position) -> None:
+        menu = QMenu(self)
+        menu.addAction("复制选中", self._copy_selected)
+        menu.addAction("删除选中", self._delete_selected)
+        menu.addSeparator()
+        only_cols_action = menu.addAction("仅复制选中列")
+        only_cols_action.setCheckable(True)
+        only_cols_action.setChecked(self._copy_only_selected_columns)
+        only_cols_action.triggered.connect(
+            lambda checked: setattr(self, "_copy_only_selected_columns", checked)
+        )
+        menu.addSeparator()
+        menu.addAction("反选", self._invert_selection)
+        menu.addAction("全选", self._view.selectAll)
+        menu.exec(self._view.viewport().mapToGlobal(position))
 
     def _focus_search(self) -> None:
         if hasattr(self, "_search_input"):
             self._search_input.setFocus()
             self._search_input.selectAll()
-
-    def _find_next(self, forward: bool) -> None:
-        if not hasattr(self, "_search_input"):
-            return
-        text = self._search_input.text().strip().lower()
-        if not text:
-            return
-        start = self._view.currentIndex().row() if self._view.currentIndex().isValid() else -1
-        row_count = self._proxy.rowCount()
-        if row_count == 0:
-            return
-        step = 1 if forward else -1
-        row = start
-        for _ in range(row_count):
-            row = (row + step) % row_count
-            for col in range(1, self._proxy.columnCount()):
-                value = self._proxy.data(self._proxy.index(row, col), Qt.DisplayRole)
-                if value is not None and text in str(value).lower():
-                    index = self._proxy.index(row, col)
-                    self._view.setCurrentIndex(index)
-                    self._view.selectRow(row)
-                    self._view.scrollTo(index)
-                    self._update_status("已定位")
-                    return
-
-    def _update_filter_summary(self) -> None:
-        rules = self._proxy.filters()
-        if not rules and not self._global_filter.text().strip():
-            self._filters_summary.setText("筛选：无")
-            return
-        parts = []
-        if self._global_filter.text().strip():
-            parts.append(f"全局包含“{self._global_filter.text().strip()}”")
-        mode_map = {
-            "Contains": "包含",
-            "Not contains": "不包含",
-            "Equals": "等于",
-            "Starts with": "开头为",
-            "Ends with": "结尾为",
-            "Regex": "正则",
-        }
-        for rule in rules:
-            if rule.column is None:
-                column_name = "全部列"
-            else:
-                headers = self._model.get_headers()
-                column_name = headers[rule.column] if rule.column < len(headers) else "未知"
-            mode_label = mode_map.get(rule.mode, rule.mode)
-            parts.append(f"{column_name} {mode_label}“{rule.value}”")
-        self._filters_summary.setText("筛选：" + "；".join(parts))
-
-    def _show_context_menu(self, position) -> None:
-        menu = QMenu(self)
-        menu.addAction("复制所选", self._copy_selected)
-        menu.addAction("删除所选", self._delete_selected)
-        menu.addSeparator()
-        menu.addAction("反选", self._invert_selection)
-        menu.addAction("全选", self._view.selectAll)
-        menu.exec(self._view.viewport().mapToGlobal(position))
 
     def _copy_selected(self) -> None:
         selection = self._view.selectionModel()
@@ -639,7 +591,13 @@ class MainWindow(QMainWindow):
         if not rows:
             return
         headers = self._model.get_headers()
-        columns = list(range(len(headers)))
+        if self._copy_only_selected_columns:
+            columns = self._get_selected_proxy_columns()
+            if not columns:
+                self._update_status("未选中列，已改为复制全部列")
+                columns = list(range(len(headers)))
+        else:
+            columns = list(range(len(headers)))
         lines: list[str] = []
         for row in rows:
             values = []
@@ -660,6 +618,7 @@ class MainWindow(QMainWindow):
         )
         if not source_rows:
             return
+        self._push_undo("删除行")
         self._model.remove_rows(source_rows)
         self._update_status("已删除所选行")
 
@@ -711,11 +670,23 @@ class MainWindow(QMainWindow):
             self._apply_text(combined)
             self._refresh_recent_menu()
 
+    def _restore_last_session(self) -> None:
+        files = self._session.load_last_files()
+        if files:
+            self._load_files(files)
+            return
+        text = self._session.load_last_text()
+        if text:
+            self._apply_text(text)
+
     def _apply_text(self, text: str) -> None:
         delimiter = self._settings.get_delimiter()
         data = self._parse_text_with_progress(text, delimiter)
+        if self._model.rowCount() > 0:
+            self._push_undo("加载数据")
         self._last_text = text
         self._model.set_data(data)
+        self._proxy.sort(0, Qt.AscendingOrder)
         self._column_order_names = self._model.get_headers()
         self._view.setColumnHidden(0, False)
         if data:
@@ -723,6 +694,59 @@ class MainWindow(QMainWindow):
             self._view.setColumnWidth(0, 60)
         self._refresh_filter_columns()
         self._update_status("数据已加载")
+        self._update_undo_actions()
+        if "\ufffd" in text:
+            self._update_status("检测到可能的乱码，请确认编码")
+
+    def _capture_snapshot(self) -> tuple[list[list[str]], list[str]]:
+        data = [row[:] for row in self._model.get_data()]
+        headers = self._model.get_headers()[:]
+        return data, headers
+
+    def _push_undo(self, reason: str | None = None) -> None:
+        if self._model.rowCount() == 0 and not self._model.get_headers():
+            return
+        self._undo_stack.append(self._capture_snapshot())
+        if len(self._undo_stack) > self._max_undo:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        if reason:
+            self._update_status(f"已记录可撤销：{reason}")
+        self._update_undo_actions()
+
+    def _restore_snapshot(self, snapshot: tuple[list[list[str]], list[str]]) -> None:
+        data, headers = snapshot
+        self._model.set_data([row[:] for row in data], headers=headers[:])
+        self._column_order_names = self._model.get_headers()
+        if self._model.rowCount() > 0:
+            self._view.setColumnHidden(0, False)
+            self._view.setColumnWidth(0, 60)
+        else:
+            self._view.setColumnHidden(0, True)
+        self._refresh_filter_columns()
+        self._update_status("数据已恢复")
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._capture_snapshot())
+        snapshot = self._undo_stack.pop()
+        self._restore_snapshot(snapshot)
+        self._update_undo_actions()
+
+    def _redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._capture_snapshot())
+        snapshot = self._redo_stack.pop()
+        self._restore_snapshot(snapshot)
+        self._update_undo_actions()
+
+    def _update_undo_actions(self) -> None:
+        if hasattr(self, "_undo_action"):
+            self._undo_action.setEnabled(bool(self._undo_stack))
+        if hasattr(self, "_redo_action"):
+            self._redo_action.setEnabled(bool(self._redo_stack))
 
     def _parse_text_with_progress(self, text: str, delimiter: str) -> list[list[str]]:
         lines = text.splitlines()
@@ -781,6 +805,7 @@ class MainWindow(QMainWindow):
         dialog = ColumnManagerDialog(headers, visibility)
         if dialog.exec() != QDialog.Accepted:
             return
+        self._push_undo("列管理")
         order, names, visibility = dialog.get_state()
         original_indices = list(range(len(headers)))
         remaining_set = set(order)
@@ -834,6 +859,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _apply_text_operation(self, op: str, params: dict, scope: str, columns: list[int]) -> None:
+        self._push_undo("批量文本")
         if scope == "Selected Cells":
             cells = self._get_selected_source_cells()
             targets = [(row, col) for row, col in cells if col in columns]
@@ -863,6 +889,7 @@ class MainWindow(QMainWindow):
         self._update_status("批量操作完成")
 
     def _apply_split_operation(self, params: dict, scope: str, columns: list[int]) -> None:
+        self._push_undo("拆分列")
         delimiter = params.get("delimiter", "----")
         keep_original = params.get("keep_original", False)
         rows_in_scope = self._get_scope_rows(scope)
@@ -911,6 +938,7 @@ class MainWindow(QMainWindow):
         self._update_status("列已拆分")
 
     def _apply_merge_operation(self, params: dict, scope: str, columns: list[int]) -> None:
+        self._push_undo("合并列")
         columns = sorted(columns)
         if len(columns) < 2:
             QMessageBox.warning(self, "批量工具", "合并需要至少选择两列。")
@@ -945,6 +973,7 @@ class MainWindow(QMainWindow):
         self._update_status("列已合并")
 
     def _apply_clean_operation(self, params: dict, scope: str, columns: list[int]) -> None:
+        self._push_undo("清理转换")
         action = params.get("action", "strip")
         rows_in_scope = self._get_scope_rows(scope)
         if action == "remove_empty_rows":
@@ -1084,6 +1113,7 @@ class MainWindow(QMainWindow):
                     continue
                 keys[key] = True
                 result_rows.append(row)
+        self._push_undo("去重")
         self._model.set_data(result_rows, headers=headers)
         self._column_order_names = self._model.get_headers()
         self._update_status("去重完成")
@@ -1119,24 +1149,20 @@ class MainWindow(QMainWindow):
         return "".join(result)
 
 
-    def _export(self, export_type: str) -> None:
+    def _export(self, export_type: str | None) -> None:
         headers = self._model.get_headers()
         templates = self._settings.get_export_templates()
         selected_rows = self._get_selected_proxy_rows()
         selected_columns_in_view = self._get_selected_proxy_columns()
         default_columns = selected_columns_in_view if selected_columns_in_view else list(range(len(headers)))
-        preview_data = self._get_proxy_data(default_columns)[:5]
-        preview_headers = [headers[i] for i in default_columns]
         dialog = ExportDialog(
             headers=headers,
             templates=templates,
-            preview_rows=preview_data,
-            preview_headers=preview_headers,
-            total_rows=self._proxy.rowCount(),
             selected_rows=len(selected_rows),
             selected_columns=default_columns,
         )
-        dialog._type_combo.setCurrentText(export_type)
+        if export_type:
+            dialog._type_combo.setCurrentText(export_type)
         dialog._delimiter_input.setText(self._settings.get_delimiter())
         if dialog.exec() != QDialog.Accepted:
             return
@@ -1159,8 +1185,10 @@ class MainWindow(QMainWindow):
         else:
             data = self._get_proxy_data(selected_columns)
         export_headers = [headers[i] for i in selected_columns]
+        export_type = config.get("type", "TXT")
         file_filter = f"{export_type} (*.{export_type.lower()})"
-        path_str, _ = QFileDialog.getSaveFileName(self, "导出", "", file_filter)
+        default_dir = self._settings.get_last_export_dir()
+        path_str, _ = QFileDialog.getSaveFileName(self, "导出", default_dir, file_filter)
         if not path_str:
             return
         path = Path(path_str)
@@ -1170,7 +1198,8 @@ class MainWindow(QMainWindow):
             export_csv(path, export_headers, data)
         else:
             export_xlsx(path, export_headers, data)
-        self._update_status(f"已导出 {export_type}")
+        self._settings.set_last_export_dir(str(path.parent))
+        self._update_status(f"已导出 {export_type}：{path}")
 
     def _get_proxy_data(self, columns: list[int]) -> list[list[str]]:
         rows: list[list[str]] = []
@@ -1243,6 +1272,7 @@ class MainWindow(QMainWindow):
         event.ignore()
 
     def closeEvent(self, event) -> None:
+        self._session.set_last_session(self._last_files, self._last_text)
         self._settings.save_geometry(self.saveGeometry())
         event.accept()
 
