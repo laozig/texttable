@@ -168,7 +168,7 @@ class MainWindow(QMainWindow):
         self._proxy.rowsInserted.connect(self._update_status)
         self._proxy.rowsRemoved.connect(self._update_status)
         self._proxy.modelReset.connect(self._update_status)
-        self._view.selectionModel().selectionChanged.connect(lambda *_: self._update_status())
+        self._view.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
         self._restore_geometry()
         self._restore_last_session()
@@ -499,6 +499,9 @@ class MainWindow(QMainWindow):
         self._update_status()
         self._update_undo_actions()
 
+    def _on_selection_changed(self, *_args) -> None:
+        self._update_status()
+
     def _refresh_filter_columns(self) -> None:
         self._filter_column.clear()
         self._filter_column.addItem("全部列", None)
@@ -723,6 +726,8 @@ class MainWindow(QMainWindow):
         self._model.set_data(data)
         self._proxy.setSourceModel(self._model)
         self._view.setModel(self._proxy)
+        if self._view.selectionModel():
+            self._view.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self._column_order_names = self._model.get_headers()
         self._view.setColumnHidden(0, False)
         if data:
