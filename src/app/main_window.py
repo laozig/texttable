@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from PySide6.QtCore import QItemSelection, QItemSelectionModel, Qt
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, QObject, Qt, QThread, Signal
 from PySide6.QtGui import (
     QAction,
     QDragEnterEvent,
@@ -47,6 +47,19 @@ from src.model.table_model import TextTableModel
 from src.utils.parser import parse_text
 
 
+class ParseWorker(QObject):
+    finished = Signal(list, str)
+
+    def __init__(self, text: str, delimiter: str) -> None:
+        super().__init__()
+        self._text = text
+        self._delimiter = delimiter
+
+    def run(self) -> None:
+        data = parse_text(self._text, delimiter=self._delimiter)
+        self.finished.emit(data, self._text)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -62,6 +75,8 @@ class MainWindow(QMainWindow):
         self._redo_stack: list[tuple[list[list[str]], list[str]]] = []
         self._max_undo = 30
         self._copy_only_selected_columns = False
+        self._parse_thread: QThread | None = None
+        self._parse_worker: ParseWorker | None = None
 
         self._model = TextTableModel()
         self._proxy = FilterProxyModel()
@@ -680,23 +695,50 @@ class MainWindow(QMainWindow):
             self._apply_text(text)
 
     def _apply_text(self, text: str) -> None:
+        if self._parse_thread and self._parse_thread.isRunning():
+            self._update_status("正在解析，请稍后")
+            return
         delimiter = self._settings.get_delimiter()
-        data = self._parse_text_with_progress(text, delimiter)
+        self._view.setSortingEnabled(False)
+        self._parse_thread = QThread(self)
+        self._parse_worker = ParseWorker(text, delimiter)
+        self._parse_worker.moveToThread(self._parse_thread)
+        self._parse_thread.started.connect(self._parse_worker.run)
+        self._parse_worker.finished.connect(self._on_parse_finished)
+        self._parse_worker.finished.connect(self._parse_thread.quit)
+        self._parse_worker.finished.connect(self._parse_worker.deleteLater)
+        self._parse_thread.finished.connect(self._parse_thread.deleteLater)
+        self._update_status("正在解析...")
+        self._parse_thread.start()
+
+    def _on_parse_finished(self, data: list[list[str]], text: str) -> None:
         if self._model.rowCount() > 0:
             self._push_undo("加载数据")
         self._last_text = text
+        self._view.setUpdatesEnabled(False)
+        self._view.setSortingEnabled(False)
+        self._proxy.setDynamicSortFilter(False)
+        self._view.setModel(None)
+        self._proxy.setSourceModel(None)
         self._model.set_data(data)
-        self._proxy.sort(0, Qt.AscendingOrder)
+        self._proxy.setSourceModel(self._model)
+        self._view.setModel(self._proxy)
         self._column_order_names = self._model.get_headers()
         self._view.setColumnHidden(0, False)
         if data:
             self._view.horizontalHeader().setStretchLastSection(False)
             self._view.setColumnWidth(0, 60)
         self._refresh_filter_columns()
+        self._proxy.setDynamicSortFilter(True)
+        self._view.setSortingEnabled(True)
+        self._view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        self._view.setUpdatesEnabled(True)
         self._update_status("数据已加载")
         self._update_undo_actions()
         if "\ufffd" in text:
             self._update_status("检测到可能的乱码，请确认编码")
+        self._parse_worker = None
+        self._parse_thread = None
 
     def _capture_snapshot(self) -> tuple[list[list[str]], list[str]]:
         data = [row[:] for row in self._model.get_data()]
@@ -751,7 +793,7 @@ class MainWindow(QMainWindow):
     def _parse_text_with_progress(self, text: str, delimiter: str) -> list[list[str]]:
         lines = text.splitlines()
         total = len(lines)
-        if total < 50000:
+        if total < 200000:
             return parse_text(text, delimiter=delimiter)
         progress = QProgressDialog("正在加载大文件...", "取消", 0, total, self)
         progress.setWindowTitle("加载")
@@ -770,7 +812,7 @@ class MainWindow(QMainWindow):
             parts = [part.strip() for part in line.split(delimiter)]
             rows.append(parts)
             max_cols = max(max_cols, len(parts))
-            if idx % 500 == 0:
+            if idx % 5000 == 0:
                 progress.setValue(idx)
         progress.setValue(total)
         if max_cols == 0:
